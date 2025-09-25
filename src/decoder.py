@@ -26,9 +26,9 @@ class AttentionHead(nn.Module):
         super(AttentionHead, self).__init__()
 
         # TODO: Initialize the linear layers required for the query, key, and value projections.
-        self.wq = None
-        self.wk = None
-        self.wv = None
+        self.wq = nn.Linear(d_model, d_q)
+        self.wk = nn.Linear(d_model, d_k)
+        self.wv = nn.Linear(d_model, d_v)
 
     def scaled_dot_product_attention(self, q, k, v, mask=None):
         """Calculate the attention weights with optional causal mask.
@@ -44,7 +44,29 @@ class AttentionHead(nn.Module):
             Tensor: Attention weights.
         """
         # TODO: Implement the scaled dot-product attention mechanism, now with masking.
-        output, weights = None, None
+
+        # Compute attention scores
+        dim_k = k.size(-1)
+        scores = torch.bmm(q, k.transpose(-2, -1))
+        scores = scores / torch.sqrt(torch.tensor(dim_k, dtype=torch.float32, device=scores.device))
+
+        # Apply mask
+        if mask is not None:
+            # masked_fill -> copies values of tensor 2 into tensor 1 in positions where the mask is true
+            # In this case, set scores for future tokens to -inf (we only want to pay attention to past tokens)
+
+            # turn mask to boolean
+            causal_mask = (mask == 0.0) # true if element is 0.0 (is a future token to which we dont want to pay attention)
+            
+            scores = scores.masked_fill_(causal_mask, float('-inf')) 
+
+        # Apply softmax (to each row -> dim -1)
+        weights = nn.functional.softmax(scores, dim=-1) 
+        
+        # Compute the output by performing a weighted sum of the value tensor
+        # using the attention weights.
+        output = torch.bmm(weights, v)
+
         return output, weights
 
     def forward(self, x, mask=None):
@@ -58,7 +80,12 @@ class AttentionHead(nn.Module):
             Tensor: Output tensor of shape (batch_size, seq_len, d_v).
         """
         #TODO: Implement the forward pass for the attention head, now with masking.
-        output = None
+
+        q = self.wq(x)
+        k = self.wk(x)
+        v = self.wv(x)
+
+        output, _ = self.scaled_dot_product_attention(q, k, v, mask)
         return output
 
 class MultiHeadAttention(nn.Module):
@@ -81,8 +108,15 @@ class MultiHeadAttention(nn.Module):
         super(MultiHeadAttention, self).__init__()
         
         # TODO: Define the heads and linear layer
-        self.heads = None
-        self.output_linear = None
+
+        self.head_dim = d_model // num_attention_heads #d_k = d_q = d_v = head_dim
+
+        self.heads = nn.ModuleList([
+            AttentionHead(d_model, self.head_dim, self.head_dim, self.head_dim)
+            for _ in range(num_attention_heads)
+        ])
+
+        self.output_linear = nn.Linear(d_model, d_model)
 
 
     def forward(self, hidden_state, mask=None):
@@ -96,7 +130,12 @@ class MultiHeadAttention(nn.Module):
             Tensor: Output tensor of shape (batch_size, seq_len, d_model).
         """
         # TODO: Implement the forward pass for the multi-head attention layer, now with masking.
-        x = None
+
+        # Same as encoder, now with mask in head
+        head_outputs = [head(hidden_state, mask=mask) for head in self.heads]
+        concat_output = torch.cat(head_outputs, dim=-1)
+        x = self.output_linear(concat_output)
+
         return x
 
 class FeedForward(nn.Module):
